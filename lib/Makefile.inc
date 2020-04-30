@@ -30,12 +30,12 @@ LIB_VAUTH_HFILES = vauth/vauth.h vauth/digest.h vauth/ntlm.h
 LIB_VTLS_CFILES = vtls/openssl.c vtls/gtls.c vtls/vtls.c vtls/nss.c     \
   vtls/mbedtls_threadlock.c vtls/wolfssl.c vtls/schannel.c              \
   vtls/schannel_verify.c vtls/sectransp.c vtls/gskit.c vtls/mbedtls.c   \
-  vtls/mesalink.c vtls/bearssl.c
+  vtls/mesalink.c vtls/bearssl.c vtls/libnx.c
 
 LIB_VTLS_HFILES = vtls/openssl.h vtls/vtls.h vtls/gtls.h vtls/nssg.h    \
   vtls/mbedtls_threadlock.h vtls/wolfssl.h vtls/schannel.h              \
   vtls/sectransp.h vtls/gskit.h vtls/mbedtls.h vtls/mesalink.h          \
-  vtls/bearssl.h
+  vtls/bearssl.h vtls/libnx.h
 
 LIB_VQUIC_CFILES = vquic/ngtcp2.c vquic/quiche.c
 

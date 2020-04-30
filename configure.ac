@@ -156,7 +156,7 @@ AC_SUBST(PKGADD_VENDOR)
 
 dnl
 dnl initialize all the info variables
-    curl_ssl_msg="no      (--with-{ssl,gnutls,nss,mbedtls,wolfssl,schannel,secure-transport,mesalink,amissl,bearssl} )"
+    curl_ssl_msg="no      (--with-{ssl,gnutls,nss,mbedtls,wolfssl,schannel,secure-transport,mesalink,amissl,bearssl,libnx} )"
     curl_ssh_msg="no      (--with-{libssh,libssh2})"
    curl_zlib_msg="no      (--with-zlib)"
  curl_brotli_msg="no      (--with-brotli)"
@@ -2632,10 +2632,89 @@ if test -z "$ssl_backends" -o "x$OPT_NSS" != xno; then
   test -z "$ssl_msg" || ssl_backends="${ssl_backends:+$ssl_backends, }$ssl_msg"
 fi
 
-case "x$OPENSSL_ENABLED$GNUTLS_ENABLED$NSS_ENABLED$MBEDTLS_ENABLED$WOLFSSL_ENABLED$WINSSL_ENABLED$SECURETRANSPORT_ENABLED$MESALINK_ENABLED$BEARSSL_ENABLED$AMISSL_ENABLED" in
+dnl ----------------------------------------------------
+dnl check for libnx
+dnl ----------------------------------------------------
+
+OPT_LIBNX=no
+
+_cppflags=$CPPFLAGS
+_ldflags=$LDFLAGS
+AC_ARG_WITH(libnx,dnl
+AC_HELP_STRING([--with-libnx=PATH],[where to look for libnx, PATH points to the installation root])
+AC_HELP_STRING([--without-libnx], [disable libnx detection]),
+  OPT_LIBNX=$withval)
+
+if test -z "$ssl_backends" -o "x$OPT_LIBNX" != xno; then
+  ssl_msg=
+
+  if test X"$OPT_LIBNX" != Xno; then
+
+    if test "$OPT_LIBNX" = "yes"; then
+      OPT_LIBNX=""
+    fi
+
+    if test -z "$OPT_LIBNX" ; then
+      dnl check for lib first without setting any new path
+
+      AC_CHECK_LIB(nx, sslInitialize,
+      dnl libnx found, set the variable
+       [
+         AC_DEFINE(USE_LIBNX, 1, [if libnx is enabled])
+         AC_SUBST(USE_LIBNX, [1])
+         LIBNX_ENABLED=1
+         USE_LIBNX="yes"
+         ssl_msg="libnx"
+	 test libnx != "$DEFAULT_SSL_BACKEND" || VALID_DEFAULT_SSL_BACKEND=yes
+        ], [], -lnx)
+    fi
+
+    addld=""
+    addlib=""
+    addcflags=""
+    libnx=""
+
+    if test "x$USE_LIBNX" != "xyes"; then
+      dnl add the path and test again
+      addld=-L$OPT_LIBNX/lib$libsuff
+      addcflags=-I$OPT_LIBNX/include
+      libnx=$OPT_LIBNX/lib$libsuff
+
+      LDFLAGS="$LDFLAGS $addld"
+      if test "$addcflags" != "-I/usr/include"; then
+         CPPFLAGS="$CPPFLAGS $addcflags"
+      fi
+
+      AC_CHECK_LIB(nx, sslInitialize,
+       [
+       AC_DEFINE(USE_LIBNX, 1, [if libnx is enabled])
+       AC_SUBST(USE_LIBNX, [1])
+       LIBNX_ENABLED=1
+       USE_LIBNX="yes"
+       ssl_msg="libnx"
+       test libnx != "$DEFAULT_SSL_BACKEND" || VALID_DEFAULT_SSL_BACKEND=yes
+       ],
+       [
+         CPPFLAGS=$_cppflags
+         LDFLAGS=$_ldflags
+       ], -lnx)
+    fi
+
+    if test "x$USE_LIBNX" = "xyes"; then
+      AC_MSG_NOTICE([detected libnx])
+
+      LIBS="-lnx $LIBS"
+    fi
+
+  fi dnl libnx not disabled
+
+  test -z "$ssl_msg" || ssl_backends="${ssl_backends:+$ssl_backends, }$ssl_msg"
+fi
+
+case "x$OPENSSL_ENABLED$GNUTLS_ENABLED$NSS_ENABLED$MBEDTLS_ENABLED$WOLFSSL_ENABLED$WINSSL_ENABLED$SECURETRANSPORT_ENABLED$MESALINK_ENABLED$BEARSSL_ENABLED$AMISSL_ENABLED$LIBNX_ENABLED" in
 x)
   AC_MSG_WARN([SSL disabled, you will not be able to use HTTPS, FTPS, NTLM and more.])
-  AC_MSG_WARN([Use --with-ssl, --with-gnutls, --with-wolfssl, --with-mbedtls, --with-nss, --with-schannel, --with-secure-transport, --with-mesalink, --with-amissl or --with-bearssl to address this.])
+  AC_MSG_WARN([Use --with-ssl, --with-gnutls, --with-wolfssl, --with-mbedtls, --with-nss, --with-schannel, --with-secure-transport, --with-mesalink, --with-amissl, --with-bearssl or --with-libnx to address this.])
   ;;
 x1)
   # one SSL backend is enabled
