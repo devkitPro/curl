@@ -108,6 +108,7 @@ CURLcode Curl_none_md5sum(unsigned char *input, size_t inputlen,
 #include "mbedtls.h"        /* mbedTLS versions */
 #include "mesalink.h"       /* MesaLink versions */
 #include "bearssl.h"        /* BearSSL versions */
+#include "libnx.h"          /* libnx versions */
 
 #ifndef MAX_PINNED_PUBKEY_SIZE
 #define MAX_PINNED_PUBKEY_SIZE 1048576 /* 1MB */
