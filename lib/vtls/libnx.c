@@ -50,6 +50,8 @@
 #include "curl_memory.h"
 #include "memdebug.h"
 
+#include <dirent.h>
+
 struct ssl_backend_data {
   SslContext context;
   SslConnection conn;
@@ -74,6 +76,102 @@ struct ssl_backend_data {
 #define PUB_DER_MAX_BYTES   (RSA_PUB_DER_MAX_BYTES > ECP_PUB_DER_MAX_BYTES ? \
                              RSA_PUB_DER_MAX_BYTES : ECP_PUB_DER_MAX_BYTES)
 */
+
+static bool load_file(const char *path, void** buffer, size_t *size) {
+    struct stat filestat;
+    size_t tmp=0;
+    *buffer = NULL;
+    *size = 0;
+    if (stat(path, &filestat)==-1) return FALSE;
+
+    FILE *f = fopen(path, "rb");
+    if(!f) return FALSE;
+
+    *size = filestat.st_size;
+    *buffer = calloc(1, *size);
+
+    if(*buffer)
+      tmp = fread(*buffer, 1, *size, f);
+    fclose(f);
+
+    if(!*buffer) return FALSE;
+
+    if(tmp!=*size) {
+        free(*buffer);
+        *buffer = NULL;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static CURLcode load_capath(struct Curl_easy *data, SslContext *context, const char *path, const bool verifypeer) {
+  Result rc = 0;
+  void* tmpbuf = NULL;
+  size_t tmpbuf_size = 0;
+  DIR* dir;
+  struct dirent* dp;
+  char tmp_path[PATH_MAX];
+
+  dir = opendir(path);
+  if(!dir) {
+    failf(data, "Error opening ca path %s",
+          path);
+
+    if(verifypeer)
+      return CURLE_SSL_CACERT_BADFILE;
+
+    return CURLE_OK;
+  }
+
+  while ((dp = readdir(dir))) {
+    if (dp->d_name[0]=='.')
+      continue;
+
+    curl_msnprintf(tmp_path, sizeof(tmp_path), "%s/%s", path, dp->d_name);
+
+    bool entrytype = FALSE;
+
+    #ifdef _DIRENT_HAVE_D_TYPE
+    if (dp->d_type == DT_UNKNOWN)
+      continue;
+    entrytype = dp->d_type != DT_REG;
+    #else
+    struct stat tmpstat;
+
+    if(stat(tmp_path, &tmpstat)==-1)
+      continue;
+
+    entrytype = (tmpstat.st_mode & S_IFMT) != S_IFREG;
+    #endif
+
+    if(entrytype) /* Ignore directories. */
+      continue;
+
+    if(!load_file(tmp_path, &tmpbuf, &tmpbuf_size)) {
+      failf(data, "Error reading ca path file %s",
+            tmp_path);
+
+      if(verifypeer)
+        return CURLE_SSL_CACERT_BADFILE;
+    }
+
+    rc = sslContextImportServerPki(context, tmpbuf, tmpbuf_size, SslCertificateFormat_Pem, NULL);
+    free(tmpbuf);
+
+    if(R_FAILED(rc)) {
+      failf(data, "Error importing ca path file %s - libnx: 0x%X",
+            tmp_path, rc);
+
+      if(verifypeer)
+        return CURLE_SSL_CACERT_BADFILE;
+    }
+  }
+
+  closedir(dir);
+
+  return CURLE_OK;
+}
 
 static CURLcode libnx_version_from_curl(u32 *outver, long version)
 {
@@ -149,14 +247,15 @@ libnx_connect_step1(struct connectdata *conn,
   const bool verifypeer = SSL_CONN_CONFIG(verifypeer);
   const char * const ssl_capath = SSL_CONN_CONFIG(CApath);
   char * const ssl_cert = SSL_SET_OPTION(cert);
+  char * const key_passwd = SSL_SET_OPTION(key_passwd);
   const char * const ssl_crlfile = SSL_SET_OPTION(CRLfile);
   const char * const hostname = SSL_IS_PROXY() ? conn->http_proxy.host.name :
     conn->host.name;
   const long int port = SSL_IS_PROXY() ? conn->port : conn->remote_port;
   int ret = -1;
   Result rc=0;
-  char errorbuf[128];
-  errorbuf[0] = 0;
+  void* tmpbuf = NULL;
+  size_t tmpbuf_size=0;
 
   /* ssl-service only supports TLS 1.0-1.2 */
   if(SSL_CONN_CONFIG(version) == CURL_SSLVERSION_SSLv2) {
@@ -201,106 +300,91 @@ libnx_connect_step1(struct connectdata *conn,
     }
   }
   else { /* Only setup the context if the application didn't. */
-    rc = sslContextRegisterInternalPki(&BACKEND->context, SslInternalPki_DeviceClientCertDefault, NULL);
-    if(R_FAILED(rc)) return CURLE_SSL_CONNECT_ERROR;
+    /* Load the trusted CA */
+    if(ssl_cafile) {
+      if(!load_file(ssl_cafile, &tmpbuf, &tmpbuf_size)) {
+        failf(data, "Error reading ca cert file %s",
+              ssl_cafile);
 
-    /* TODO: Impl the rest of the cert loading, and only use sslContextRegisterInternalPki if nothing else was specified. */
-  }
+        if(verifypeer)
+          return CURLE_SSL_CACERT_BADFILE;
+      }
+      else {
+        rc = sslContextImportServerPki(&BACKEND->context, tmpbuf, tmpbuf_size, SslCertificateFormat_Pem, NULL);
+        free(tmpbuf);
 
-  /* Load the trusted CA */
-  /*mbedtls_x509_crt_init(&BACKEND->cacert);
+        if(R_FAILED(rc)) {
+          failf(data, "Error importing ca cert file %s - libnx: 0x%X",
+                ssl_cafile, rc);
 
-  if(ssl_cafile) {
-    ret = mbedtls_x509_crt_parse_file(&BACKEND->cacert, ssl_cafile);
+          if(verifypeer)
+            return CURLE_SSL_CACERT_BADFILE;
+        }
+      }
+    }
 
-    if(ret<0) {
-#ifdef MBEDTLS_ERROR_C
-      mbedtls_strerror(ret, errorbuf, sizeof(errorbuf));
-#endif*/ /* MBEDTLS_ERROR_C */
-      /*failf(data, "Error reading ca cert file %s - mbedTLS: (-0x%04X) %s",
-            ssl_cafile, -ret, errorbuf);
+    if(ssl_capath) {
+      CURLcode retcode = load_capath(data, &BACKEND->context, ssl_capath, verifypeer);
 
-      if(verifypeer)
-        return CURLE_SSL_CACERT_BADFILE;
+      if(retcode) return retcode;
+    }
+
+    /* Load the CRL */
+    /* The required ssl-service input for this is unknown. */
+    /* Therefore, the below is disabled. */
+    /*
+    if(ssl_crlfile) {
+      if(!load_file(ssl_crlfile, &tmpbuf, &tmpbuf_size)) {
+        failf(data, "Error reading CRL file %s",
+              ssl_cert);
+
+        return CURLE_SSL_CRL_BADFILE;
+      }
+
+      rc = sslContextImportCrl(&BACKEND->context, tmpbuf, tmpbuf_size, NULL);
+      free(tmpbuf);
+
+      if(R_FAILED(rc)) {
+        failf(data, "Error importing CRL file %s - libnx: 0x%X",
+              ssl_crlfile, rc);
+
+        return CURLE_SSL_CRL_BADFILE;
+      }
+    }*/
+
+    /* Load the client certificate */
+    if(ssl_cert) {
+      if(!SSL_SET_OPTION(cert_type))
+        infof(data, "WARNING: SSL: Certificate type not set, assuming "
+                    "PKCS#12 format.\n");
+        else if(strncmp(SSL_SET_OPTION(cert_type), "P12",
+          strlen(SSL_SET_OPTION(cert_type))) != 0)
+          infof(data, "WARNING: SSL: The ssl-service only supports "
+                      "loading identities that are in PKCS#12 format.\n");
+
+      if(!load_file(ssl_cert, &tmpbuf, &tmpbuf_size)) {
+        failf(data, "Error reading client cert file %s",
+              ssl_cert);
+
+        return CURLE_SSL_CERTPROBLEM;
+      }
+
+      rc = sslContextImportClientPki(&BACKEND->context, tmpbuf, tmpbuf_size, key_passwd, key_passwd ? strlen(key_passwd) : 0, NULL);
+      free(tmpbuf);
+
+      if(R_FAILED(rc)) {
+        failf(data, "Error importing client PKCS#12 file %s - libnx: 0x%X",
+              ssl_cert, rc);
+
+        return CURLE_SSL_CERTPROBLEM;
+      }
+    }
+
+    if(!ssl_cafile && !ssl_capath && !ssl_cert) {
+      rc = sslContextRegisterInternalPki(&BACKEND->context, SslInternalPki_DeviceClientCertDefault, NULL);
+      if(R_FAILED(rc)) return CURLE_SSL_CONNECT_ERROR;
     }
   }
-
-  if(ssl_capath) {
-    ret = mbedtls_x509_crt_parse_path(&BACKEND->cacert, ssl_capath);
-
-    if(ret<0) {
-#ifdef MBEDTLS_ERROR_C
-      mbedtls_strerror(ret, errorbuf, sizeof(errorbuf));
-#endif*/ /* MBEDTLS_ERROR_C */
-      /*failf(data, "Error reading ca cert path %s - mbedTLS: (-0x%04X) %s",
-            ssl_capath, -ret, errorbuf);
-
-      if(verifypeer)
-        return CURLE_SSL_CACERT_BADFILE;
-    }
-  }*/
-
-  /* Load the client certificate */
-  /*mbedtls_x509_crt_init(&BACKEND->clicert);
-
-  if(ssl_cert) {
-    ret = mbedtls_x509_crt_parse_file(&BACKEND->clicert, ssl_cert);
-
-    if(ret) {
-#ifdef MBEDTLS_ERROR_C
-      mbedtls_strerror(ret, errorbuf, sizeof(errorbuf));
-#endif*/ /* MBEDTLS_ERROR_C */
-      /*failf(data, "Error reading client cert file %s - mbedTLS: (-0x%04X) %s",
-            ssl_cert, -ret, errorbuf);
-
-      return CURLE_SSL_CERTPROBLEM;
-    }
-  }*/
-
-  /* Load the client private key */
-  /*mbedtls_pk_init(&BACKEND->pk);
-
-  if(SSL_SET_OPTION(key)) {
-    ret = mbedtls_pk_parse_keyfile(&BACKEND->pk, SSL_SET_OPTION(key),
-                                   SSL_SET_OPTION(key_passwd));
-    if(ret == 0 && !(mbedtls_pk_can_do(&BACKEND->pk, MBEDTLS_PK_RSA) ||
-                     mbedtls_pk_can_do(&BACKEND->pk, MBEDTLS_PK_ECKEY)))
-      ret = MBEDTLS_ERR_PK_TYPE_MISMATCH;
-
-    if(ret) {
-#ifdef MBEDTLS_ERROR_C
-      mbedtls_strerror(ret, errorbuf, sizeof(errorbuf));
-#endif*/ /* MBEDTLS_ERROR_C */
-      /*failf(data, "Error reading private key %s - mbedTLS: (-0x%04X) %s",
-            SSL_SET_OPTION(key), -ret, errorbuf);
-
-      return CURLE_SSL_CERTPROBLEM;
-    }
-  }*/
-
-  /* Load the CRL */
-  /*mbedtls_x509_crl_init(&BACKEND->crl);
-
-  if(ssl_crlfile) {
-    ret = mbedtls_x509_crl_parse_file(&BACKEND->crl, ssl_crlfile);
-
-    if(ret) {
-#ifdef MBEDTLS_ERROR_C
-      mbedtls_strerror(ret, errorbuf, sizeof(errorbuf));
-#endif*/ /* MBEDTLS_ERROR_C */
-      /*failf(data, "Error reading CRL file %s - mbedTLS: (-0x%04X) %s",
-            ssl_crlfile, -ret, errorbuf);
-
-      return CURLE_SSL_CRL_BADFILE;
-    }
-  }
-
-  infof(data, "mbedTLS: Connecting to %s:%ld\n", hostname, port);*/
-
-/*#if defined(MBEDTLS_SSL_RENEGOTIATION)
-  mbedtls_ssl_conf_renegotiation(&BACKEND->config,
-                                 MBEDTLS_SSL_RENEGOTIATION_ENABLED);
-#endif*/
 
 /*#ifdef HAS_ALPN
   if(conn->bits.tls_enable_alpn) {
@@ -355,6 +439,8 @@ libnx_connect_step1(struct connectdata *conn,
 
   if (R_FAILED(rc))
     return CURLE_SSL_CONNECT_ERROR;
+
+  infof(data, "libnx: Connecting to %s:%ld\n", hostname, port);
 
   connssl->connecting_state = ssl_connect_2;
 
@@ -591,9 +677,9 @@ libnx_connect_common(struct connectdata *conn,
 
     mbedtls_x509_crt_free(p);
     free(p);
-  }
+  }*/
 
-#ifdef HAS_ALPN
+/*#ifdef HAS_ALPN
   if(conn->bits.tls_enable_alpn) {
     const char *next_protocol = mbedtls_ssl_get_alpn_protocol(&BACKEND->ssl);
 
@@ -686,6 +772,7 @@ static void *Curl_libnx_get_internals(struct ssl_connect_data *connssl,
 const struct Curl_ssl Curl_ssl_libnx = {
   { CURLSSLBACKEND_LIBNX, "libnx" }, /* info */
 
+  SSLSUPP_CA_PATH |
   SSLSUPP_PINNEDPUBKEY |
   SSLSUPP_SSL_CTX |
   SSLSUPP_TLS13_CIPHERSUITES,
