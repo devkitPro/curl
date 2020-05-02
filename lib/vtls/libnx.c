@@ -183,6 +183,14 @@ static CURLcode libnx_version_from_curl(u32 *outver, long version)
   return CURLE_SSL_CONNECT_ERROR;
 }
 
+static CURLcode Curl_libnx_random(struct Curl_easy *data,
+                                    unsigned char *entropy, size_t length)
+{
+  Result rc = csrngGetRandomBytes(entropy, length);
+
+  return R_SUCCEEDED(rc) ? CURLE_OK : CURLE_FAILED_INIT;
+}
+
 static CURLcode
 set_ssl_version_min_max(struct connectdata *conn, int sockindex, u32 *out_version)
 {
@@ -743,11 +751,18 @@ static CURLcode Curl_libnx_connect(struct connectdata *conn, int sockindex)
  */
 static int Curl_libnx_init(void)
 {
-  return R_SUCCEEDED(sslInitialize(0x3));
+  Result rc=0;
+
+  rc = sslInitialize(0x3);
+
+  if(R_SUCCEEDED(rc)) rc = csrngInitialize();
+
+  return R_SUCCEEDED(rc);
 }
 
 static void Curl_libnx_cleanup(void)
 {
+  csrngExit();
   sslExit();
 }
 
@@ -793,7 +808,7 @@ const struct Curl_ssl Curl_ssl_libnx = {
   Curl_libnx_check_cxn,             /* check_cxn */
   Curl_none_shutdown,               /* shutdown */
   Curl_libnx_data_pending,          /* data_pending */
-  Curl_none_random,                 /* random */
+  Curl_libnx_random,                /* random */
   Curl_none_cert_status_request,    /* cert_status_request */
   Curl_libnx_connect,               /* connect */
   Curl_libnx_connect_nonblocking,   /* connect_nonblocking */
