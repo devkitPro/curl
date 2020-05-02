@@ -44,6 +44,7 @@
 #include "connect.h" /* for the connect timeout */
 #include "select.h"
 #include "multiif.h"
+#include "x509asn1.h"
 
 /* The last 3 #include files should be in this order */
 #include "curl_printf.h"
@@ -55,6 +56,8 @@
 struct ssl_backend_data {
   SslContext context;
   SslConnection conn;
+  u8 *certbuf;
+  size_t certbuf_size;
 };
 
 #define BACKEND connssl->backend
@@ -65,17 +68,6 @@ struct ssl_backend_data {
 #  define HAS_ALPN
 #endif
 
-
-/* See https://tls.mbed.org/discussions/generic/
-   howto-determine-exact-buffer-len-for-mbedtls_pk_write_pubkey_der
-*/
-/*
-#define RSA_PUB_DER_MAX_BYTES   (38 + 2 * MBEDTLS_MPI_MAX_SIZE)
-#define ECP_PUB_DER_MAX_BYTES   (30 + 2 * MBEDTLS_ECP_MAX_BYTES)
-
-#define PUB_DER_MAX_BYTES   (RSA_PUB_DER_MAX_BYTES > ECP_PUB_DER_MAX_BYTES ? \
-                             RSA_PUB_DER_MAX_BYTES : ECP_PUB_DER_MAX_BYTES)
-*/
 
 static bool load_file(const char *path, void** buffer, size_t *size) {
     struct stat filestat;
@@ -424,6 +416,9 @@ libnx_connect_step1(struct connectdata *conn,
   if(R_SUCCEEDED(rc))
     sslConnectionSetOption(&BACKEND->conn, SslOptionType_SkipDefaultVerify, TRUE);
 
+  if(R_SUCCEEDED(rc) && hosversionAtLeast(3,0,0))
+    rc = sslConnectionSetOption(&BACKEND->conn, SslOptionType_GetServerCertChain, TRUE);
+
   if(R_SUCCEEDED(rc)) {
     u32 verifyopt = SslVerifyOption_DateCheck;
     if(verifypeer) verifyopt |= SslVerifyOption_PeerCa;
@@ -452,17 +447,122 @@ libnx_connect_step2(struct connectdata *conn,
                    int sockindex)
 {
   Result rc=0;
+  CURLcode retcode = CURLE_OK;
   struct Curl_easy *data = conn->data;
   struct ssl_connect_data* connssl = &conn->ssl[sockindex];
+  const char * const pinnedpubkey = SSL_IS_PROXY() ?
+        data->set.str[STRING_SSL_PINNEDPUBLICKEY_PROXY] :
+        data->set.str[STRING_SSL_PINNEDPUBLICKEY_ORIG];
+  const size_t bufsize = 16384;
+  u8 *buffer = calloc(1, bufsize);
+  u8 *peercert = NULL;
+  u32 peercert_size = 0;
+  u8 zeros[4]={0};
+
+  if(!BACKEND->certbuf) {
+    BACKEND->certbuf_size = bufsize;
+    BACKEND->certbuf = (u8*)calloc(1, BACKEND->certbuf_size);
+  }
+
+  if(!buffer || !BACKEND->certbuf) {
+    free(buffer);
+    free(BACKEND->certbuf);
+    return CURLE_OUT_OF_MEMORY;
+  }
 
   u32 out_size=0, total_certs=0;
-  rc = sslConnectionDoHandshake(&BACKEND->conn, &out_size, &total_certs, NULL, 0); /* TODO: server_certbuf */
+  rc = sslConnectionDoHandshake(&BACKEND->conn, &out_size, &total_certs, buffer, bufsize);
+
+  if(memcmp(buffer, zeros, sizeof(zeros))) {
+    memcpy(BACKEND->certbuf, buffer, bufsize);
+  }
+  free(buffer);
+
   if(R_FAILED(rc)) {
       if(R_VALUE(rc) == MAKERESULT(123, 204)) /* PR_WOULD_BLOCK_ERROR */
         return CURLE_AGAIN;
 
       return R_VALUE(rc) == MAKERESULT(123, 207) ? CURLE_PEER_FAILED_VERIFICATION : CURLE_SSL_CONNECT_ERROR;
   }
+
+  if(out_size && total_certs) {
+    if(data->set.ssl.certinfo) retcode = Curl_ssl_init_certinfo(data, (int)total_certs);
+    if(!retcode) {
+      if(hosversionBefore(3,0,0)) {
+        infof(data, "Dumping cert info:\n");
+        retcode = Curl_extract_certinfo(conn, 0, BACKEND->certbuf, &BACKEND->certbuf[out_size]);
+        peercert = buffer;
+        peercert_size = out_size;
+      }
+      else {
+        for(u32 certi=0; certi<total_certs; certi++) {
+          void* certdata = NULL;
+          u32 certdata_size=0;
+
+          rc = sslConnectionGetServerCertDetail(BACKEND->certbuf, out_size, certi, &certdata, &certdata_size);
+          if(R_SUCCEEDED(rc)) {
+            if(!certi) {
+              infof(data, "Dumping cert info:\n");
+              peercert = certdata;
+              peercert_size = certdata_size;
+            }
+            retcode = Curl_extract_certinfo(conn, (int)certi, certdata, &((u8*)certdata)[certdata_size]);
+          }
+
+          if(R_FAILED(rc) || retcode) break;
+          if(!data->set.ssl.certinfo) break;
+        }
+      }
+    }
+  }
+
+  if(R_FAILED(rc) || retcode)
+    failf(data, "Unable to dump certificate information.\n");
+
+  if(pinnedpubkey) {
+    curl_X509certificate cert;
+
+    if(!peercert || !peercert_size) {
+      failf(data, "Failed due to missing peer certificate%s.", SSL_CONN_CONFIG(verifypeer) ? "" : ", CURLOPT_SSL_VERIFYPEER must be enabled");
+      return CURLE_SSL_PINNEDPUBKEYNOTMATCH;
+    }
+
+    retcode = Curl_parseX509(&cert, peercert, &peercert[peercert_size]);
+    if(!retcode) return retcode;
+
+    retcode = Curl_pin_peer_pubkey(data,
+                                  pinnedpubkey,
+                                  cert.subjectPublicKey.beg,
+                                  (uintptr_t)cert.subjectPublicKey.end - (uintptr_t)cert.subjectPublicKey.beg);
+    if(retcode) return retcode;
+  }
+
+/*#ifdef HAS_ALPN
+  if(conn->bits.tls_enable_alpn) {
+    const char *next_protocol = mbedtls_ssl_get_alpn_protocol(&BACKEND->ssl);
+
+    if(next_protocol) {
+      infof(data, "ALPN, server accepted to use %s\n", next_protocol);
+#ifdef USE_NGHTTP2
+      if(!strncmp(next_protocol, NGHTTP2_PROTO_VERSION_ID,
+                  NGHTTP2_PROTO_VERSION_ID_LEN) &&
+         !next_protocol[NGHTTP2_PROTO_VERSION_ID_LEN]) {
+        conn->negnpn = CURL_HTTP_VERSION_2;
+      }
+      else
+#endif
+        if(!strncmp(next_protocol, ALPN_HTTP_1_1, ALPN_HTTP_1_1_LENGTH) &&
+           !next_protocol[ALPN_HTTP_1_1_LENGTH]) {
+          conn->negnpn = CURL_HTTP_VERSION_1_1;
+        }
+    }
+    else {
+      infof(data, "ALPN, server did not agree to a protocol\n");
+    }
+    Curl_multiuse_state(conn, conn->negnpn == CURL_HTTP_VERSION_2 ?
+                        BUNDLE_MULTIPLEX : BUNDLE_NO_MULTIUSE);
+  }
+#endif*/
 
   connssl->connecting_state = ssl_connect_done;
   infof(data, "SSL connected\n");
@@ -494,6 +594,9 @@ static void Curl_libnx_close(struct connectdata *conn, int sockindex)
   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
   sslConnectionClose(&BACKEND->conn);
   sslContextClose(&BACKEND->context);
+  free(BACKEND->certbuf);
+  BACKEND->certbuf = NULL;
+  BACKEND->certbuf_size = 0;
 }
 
 static ssize_t libnx_recv(struct connectdata *conn, int num,
@@ -610,102 +713,6 @@ libnx_connect_common(struct connectdata *conn,
     }
   }
 
-  /*
-  peercert = mbedtls_ssl_get_peer_cert(&BACKEND->ssl);
-
-  if(peercert && data->set.verbose) {
-    const size_t bufsize = 16384;
-    char *buffer = malloc(bufsize);
-
-    if(!buffer)
-      return CURLE_OUT_OF_MEMORY;
-
-    if(mbedtls_x509_crt_info(buffer, bufsize, "* ", peercert) > 0)
-      infof(data, "Dumping cert info:\n%s\n", buffer);
-    else
-      infof(data, "Unable to dump certificate information.\n");
-
-    free(buffer);
-  }
-
-  if(pinnedpubkey) {
-    int size;
-    CURLcode result;
-    mbedtls_x509_crt *p;
-    unsigned char pubkey[PUB_DER_MAX_BYTES];
-
-    if(!peercert || !peercert->raw.p || !peercert->raw.len) {
-      failf(data, "Failed due to missing peer certificate");
-      return CURLE_SSL_PINNEDPUBKEYNOTMATCH;
-    }
-
-    p = calloc(1, sizeof(*p));
-
-    if(!p)
-      return CURLE_OUT_OF_MEMORY;
-
-    mbedtls_x509_crt_init(p);*/
-
-    /* Make a copy of our const peercert because mbedtls_pk_write_pubkey_der
-       needs a non-const key, for now.
-       https://github.com/ARMmbed/mbedtls/issues/396 */
-    /*if(mbedtls_x509_crt_parse_der(p, peercert->raw.p, peercert->raw.len)) {
-      failf(data, "Failed copying peer certificate");
-      mbedtls_x509_crt_free(p);
-      free(p);
-      return CURLE_SSL_PINNEDPUBKEYNOTMATCH;
-    }
-
-    size = mbedtls_pk_write_pubkey_der(&p->pk, pubkey, PUB_DER_MAX_BYTES);
-
-    if(size <= 0) {
-      failf(data, "Failed copying public key from peer certificate");
-      mbedtls_x509_crt_free(p);
-      free(p);
-      return CURLE_SSL_PINNEDPUBKEYNOTMATCH;
-    }*/
-
-    /* mbedtls_pk_write_pubkey_der writes data at the end of the buffer. */
-    /*result = Curl_pin_peer_pubkey(data,
-                                  pinnedpubkey,
-                                  &pubkey[PUB_DER_MAX_BYTES - size], size);
-    if(result) {
-      mbedtls_x509_crt_free(p);
-      free(p);
-      return result;
-    }
-
-    mbedtls_x509_crt_free(p);
-    free(p);
-  }*/
-
-/*#ifdef HAS_ALPN
-  if(conn->bits.tls_enable_alpn) {
-    const char *next_protocol = mbedtls_ssl_get_alpn_protocol(&BACKEND->ssl);
-
-    if(next_protocol) {
-      infof(data, "ALPN, server accepted to use %s\n", next_protocol);
-#ifdef USE_NGHTTP2
-      if(!strncmp(next_protocol, NGHTTP2_PROTO_VERSION_ID,
-                  NGHTTP2_PROTO_VERSION_ID_LEN) &&
-         !next_protocol[NGHTTP2_PROTO_VERSION_ID_LEN]) {
-        conn->negnpn = CURL_HTTP_VERSION_2;
-      }
-      else
-#endif
-        if(!strncmp(next_protocol, ALPN_HTTP_1_1, ALPN_HTTP_1_1_LENGTH) &&
-           !next_protocol[ALPN_HTTP_1_1_LENGTH]) {
-          conn->negnpn = CURL_HTTP_VERSION_1_1;
-        }
-    }
-    else {
-      infof(data, "ALPN, server did not agree to a protocol\n");
-    }
-    Curl_multiuse_state(conn, conn->negnpn == CURL_HTTP_VERSION_2 ?
-                        BUNDLE_MULTIPLEX : BUNDLE_NO_MULTIUSE);
-  }
-#endif*/
-
   return retcode;
 }
 
@@ -773,6 +780,7 @@ const struct Curl_ssl Curl_ssl_libnx = {
   { CURLSSLBACKEND_LIBNX, "libnx" }, /* info */
 
   SSLSUPP_CA_PATH |
+  SSLSUPP_CERTINFO |
   SSLSUPP_PINNEDPUBKEY |
   SSLSUPP_SSL_CTX |
   SSLSUPP_TLS13_CIPHERSUITES,
