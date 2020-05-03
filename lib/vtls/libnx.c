@@ -386,27 +386,6 @@ libnx_connect_step1(struct connectdata *conn,
     }
   }
 
-/*#ifdef HAS_ALPN
-  if(conn->bits.tls_enable_alpn) {
-    const char **p = &BACKEND->protocols[0];
-#ifdef USE_NGHTTP2
-    if(data->set.httpversion >= CURL_HTTP_VERSION_2)
-      *p++ = NGHTTP2_PROTO_VERSION_ID;
-#endif
-    *p++ = ALPN_HTTP_1_1;
-    *p = NULL;*/
-    /* this function doesn't clone the protocols array, which is why we need
-       to keep it around */
-    /*if(mbedtls_ssl_conf_alpn_protocols(&BACKEND->config,
-                                       &BACKEND->protocols[0])) {
-      failf(data, "Failed setting ALPN protocols");
-      return CURLE_SSL_CONNECT_ERROR;
-    }
-    for(p = &BACKEND->protocols[0]; *p; ++p)
-      infof(data, "ALPN, offering %s\n", *p);
-  }
-#endif*/
-
   rc = sslContextCreateConnection(&BACKEND->context, &BACKEND->conn);
 
   if(R_SUCCEEDED(rc))
@@ -439,6 +418,35 @@ libnx_connect_step1(struct connectdata *conn,
 
   if(R_SUCCEEDED(rc))
     rc = sslConnectionSetIoMode(&BACKEND->conn, nonblocking ? SslIoMode_NonBlocking : SslIoMode_Blocking);
+
+#ifdef HAS_ALPN
+  if(conn->bits.tls_enable_alpn && hosversionAtLeast(9,0,0)) {
+    u8 protocols[0x100]={0};
+    u8 *p = protocols;
+#ifdef USE_NGHTTP2
+    if(data->set.httpversion >= CURL_HTTP_VERSION_2) {
+      memcpy(p, NGHTTP2_PROTO_ALPN, NGHTTP2_PROTO_ALPN_LEN);
+      p+= NGHTTP2_PROTO_ALPN_LEN;
+      infof(data, "ALPN, offering %s\n", NGHTTP2_PROTO_VERSION_ID);
+    }
+#endif
+    *p++ = ALPN_HTTP_1_1_LENGTH;
+    memcpy(p, ALPN_HTTP_1_1, ALPN_HTTP_1_1_LENGTH);
+    infof(data, "ALPN, offering %s\n", ALPN_HTTP_1_1);
+
+    rc = sslConnectionSetNextAlpnProto(&BACKEND->conn, protocols, (uintptr_t)p + ALPN_HTTP_1_1_LENGTH - (uintptr_t)protocols);
+    if(R_FAILED(rc)) {
+      failf(data, "Failed setting ALPN protocols");
+      return CURLE_SSL_CONNECT_ERROR;
+    }
+
+    rc = sslConnectionSetOption(&BACKEND->conn, SslOptionType_EnableAlpn, TRUE);
+    if(R_FAILED(rc)) {
+      failf(data, "Failed enabling ALPN");
+      return CURLE_SSL_CONNECT_ERROR;
+    }
+  }
+#endif
 
   if (R_FAILED(rc))
     return CURLE_SSL_CONNECT_ERROR;
@@ -545,22 +553,25 @@ libnx_connect_step2(struct connectdata *conn,
     if(retcode) return retcode;
   }
 
-/*#ifdef HAS_ALPN
+#ifdef HAS_ALPN
   if(conn->bits.tls_enable_alpn) {
-    const char *next_protocol = mbedtls_ssl_get_alpn_protocol(&BACKEND->ssl);
+    u8 next_protocol[0x101]={0};
+    SslAlpnProtoState state;
+    u32 out_size=0;
+    rc = sslConnectionGetNextAlpnProto(&BACKEND->conn, &state, &out_size, next_protocol, sizeof(next_protocol)-1);
 
-    if(next_protocol) {
+    if(R_SUCCEEDED(rc) && next_protocol[0] && out_size && state==SslAlpnProtoState_Selected) {
       infof(data, "ALPN, server accepted to use %s\n", next_protocol);
 #ifdef USE_NGHTTP2
-      if(!strncmp(next_protocol, NGHTTP2_PROTO_VERSION_ID,
-                  NGHTTP2_PROTO_VERSION_ID_LEN) &&
-         !next_protocol[NGHTTP2_PROTO_VERSION_ID_LEN]) {
+      if(out_size == NGHTTP2_PROTO_VERSION_ID_LEN &&
+         !strncmp(next_protocol, NGHTTP2_PROTO_VERSION_ID,
+                  NGHTTP2_PROTO_VERSION_ID_LEN)) {
         conn->negnpn = CURL_HTTP_VERSION_2;
       }
       else
 #endif
-        if(!strncmp(next_protocol, ALPN_HTTP_1_1, ALPN_HTTP_1_1_LENGTH) &&
-           !next_protocol[ALPN_HTTP_1_1_LENGTH]) {
+        if(out_size == ALPN_HTTP_1_1_LENGTH &&
+           !strncmp(next_protocol, ALPN_HTTP_1_1, ALPN_HTTP_1_1_LENGTH)) {
           conn->negnpn = CURL_HTTP_VERSION_1_1;
         }
     }
@@ -570,7 +581,7 @@ libnx_connect_step2(struct connectdata *conn,
     Curl_multiuse_state(conn, conn->negnpn == CURL_HTTP_VERSION_2 ?
                         BUNDLE_MULTIPLEX : BUNDLE_NO_MULTIUSE);
   }
-#endif*/
+#endif
 
   connssl->connecting_state = ssl_connect_done;
   infof(data, "SSL connected\n");
