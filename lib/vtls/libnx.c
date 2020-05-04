@@ -416,12 +416,15 @@ libnx_connect_step1(struct connectdata *conn,
   if(R_SUCCEEDED(rc))
     rc = sslConnectionSetSessionCacheMode(&BACKEND->conn, SSL_CONN_CONFIG(sessionid) ? SslSessionCacheMode_SessionId : SslSessionCacheMode_None);
 
-  if(R_SUCCEEDED(rc))
-    rc = sslConnectionSetIoMode(&BACKEND->conn, nonblocking ? SslIoMode_NonBlocking : SslIoMode_Blocking);
-
 #ifdef HAS_ALPN
   if(conn->bits.tls_enable_alpn && hosversionAtLeast(9,0,0)) {
-    u8 protocols[0x100]={0};
+    rc = sslConnectionSetOption(&BACKEND->conn, SslOptionType_EnableAlpn, TRUE);
+    if(R_FAILED(rc)) {
+      failf(data, "Failed enabling ALPN");
+      return CURLE_SSL_CONNECT_ERROR;
+    }
+
+    u8 protocols[0x80]={0};
     u8 *p = protocols;
 #ifdef USE_NGHTTP2
     if(data->set.httpversion >= CURL_HTTP_VERSION_2) {
@@ -439,14 +442,11 @@ libnx_connect_step1(struct connectdata *conn,
       failf(data, "Failed setting ALPN protocols");
       return CURLE_SSL_CONNECT_ERROR;
     }
-
-    rc = sslConnectionSetOption(&BACKEND->conn, SslOptionType_EnableAlpn, TRUE);
-    if(R_FAILED(rc)) {
-      failf(data, "Failed enabling ALPN");
-      return CURLE_SSL_CONNECT_ERROR;
-    }
   }
 #endif
+
+  if(R_SUCCEEDED(rc))
+    rc = sslConnectionSetIoMode(&BACKEND->conn, nonblocking ? SslIoMode_NonBlocking : SslIoMode_Blocking);
 
   if (R_FAILED(rc))
     return CURLE_SSL_CONNECT_ERROR;
@@ -555,23 +555,23 @@ libnx_connect_step2(struct connectdata *conn,
 
 #ifdef HAS_ALPN
   if(conn->bits.tls_enable_alpn) {
-    u8 next_protocol[0x101]={0};
+    u8 next_protocol[0x33]={0};
     SslAlpnProtoState state;
     u32 out_size=0;
     rc = sslConnectionGetNextAlpnProto(&BACKEND->conn, &state, &out_size, next_protocol, sizeof(next_protocol)-1);
 
-    if(R_SUCCEEDED(rc) && next_protocol[0] && out_size && state==SslAlpnProtoState_Selected) {
+    if(R_SUCCEEDED(rc) && next_protocol[0] && (state==SslAlpnProtoState_Negotiated || state==SslAlpnProtoState_Selected)) {
       infof(data, "ALPN, server accepted to use %s\n", next_protocol);
 #ifdef USE_NGHTTP2
       if(out_size == NGHTTP2_PROTO_VERSION_ID_LEN &&
-         !strncmp(next_protocol, NGHTTP2_PROTO_VERSION_ID,
-                  NGHTTP2_PROTO_VERSION_ID_LEN)) {
+         !memcmp(next_protocol, NGHTTP2_PROTO_VERSION_ID,
+                 NGHTTP2_PROTO_VERSION_ID_LEN)) {
         conn->negnpn = CURL_HTTP_VERSION_2;
       }
       else
 #endif
         if(out_size == ALPN_HTTP_1_1_LENGTH &&
-           !strncmp(next_protocol, ALPN_HTTP_1_1, ALPN_HTTP_1_1_LENGTH)) {
+           !memcmp(next_protocol, ALPN_HTTP_1_1, ALPN_HTTP_1_1_LENGTH)) {
           conn->negnpn = CURL_HTTP_VERSION_1_1;
         }
     }
