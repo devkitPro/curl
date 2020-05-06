@@ -330,7 +330,9 @@ libnx_connect_step1(struct connectdata *conn,
     }
 
     /* Load the CRL */
-    /* The required ssl-service input for this is unknown. */
+    /* The input for CRLFILE is PEM, but the ssl-service requires DER. */
+    /* A helper func for converting PEM to DER would be needed for this. */
+    /* sectransp.c has pem_to_der(), but having a duplicate func isn't ideal. */
     /* Therefore, the below is disabled. */
     /*
     if(ssl_crlfile) {
