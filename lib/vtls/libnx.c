@@ -69,39 +69,45 @@ struct ssl_backend_data {
 #endif
 
 
-static bool load_file(const char *path, void** buffer, size_t *size) {
-    struct stat filestat;
-    size_t tmp=0;
+static bool load_file(const char *path, void **buffer, size_t *size)
+{
+  struct stat filestat;
+  size_t tmp = 0;
+  *buffer = NULL;
+  *size = 0;
+  if(stat(path, &filestat)==-1)
+    return FALSE;
+
+  FILE *f = fopen(path, "rb");
+  if(!f)
+    return FALSE;
+
+  *size = filestat.st_size;
+  *buffer = calloc(1, *size);
+
+  if(*buffer)
+    tmp = fread(*buffer, 1, *size, f);
+  fclose(f);
+
+  if(!*buffer)
+    return FALSE;
+
+  if(tmp!=*size) {
+    free(*buffer);
     *buffer = NULL;
-    *size = 0;
-    if (stat(path, &filestat)==-1) return FALSE;
+    return FALSE;
+  }
 
-    FILE *f = fopen(path, "rb");
-    if(!f) return FALSE;
-
-    *size = filestat.st_size;
-    *buffer = calloc(1, *size);
-
-    if(*buffer)
-      tmp = fread(*buffer, 1, *size, f);
-    fclose(f);
-
-    if(!*buffer) return FALSE;
-
-    if(tmp!=*size) {
-        free(*buffer);
-        *buffer = NULL;
-        return FALSE;
-    }
-
-    return TRUE;
+  return TRUE;
 }
 
-static CURLcode load_capath(struct Curl_easy *data, SslContext *context, const char *path, const bool verifypeer) {
+static CURLcode load_capath(struct Curl_easy *data, SslContext *context,
+                            const char *path, const bool verifypeer)
+{
   Result rc = 0;
-  void* tmpbuf = NULL;
+  void *tmpbuf = NULL;
   size_t tmpbuf_size = 0;
-  DIR* dir;
+  DIR *dir;
   struct dirent* dp;
   char tmp_path[PATH_MAX];
 
@@ -116,8 +122,8 @@ static CURLcode load_capath(struct Curl_easy *data, SslContext *context, const c
     return CURLE_OK;
   }
 
-  while ((dp = readdir(dir))) {
-    if (dp->d_name[0]=='.')
+  while((dp = readdir(dir))) {
+    if(dp->d_name[0]=='.')
       continue;
 
     curl_msnprintf(tmp_path, sizeof(tmp_path), "%s/%s", path, dp->d_name);
@@ -125,7 +131,7 @@ static CURLcode load_capath(struct Curl_easy *data, SslContext *context, const c
     bool entrytype = FALSE;
 
     #ifdef _DIRENT_HAVE_D_TYPE
-    if (dp->d_type == DT_UNKNOWN)
+    if(dp->d_type == DT_UNKNOWN)
       continue;
     entrytype = dp->d_type != DT_REG;
     #else
@@ -148,7 +154,8 @@ static CURLcode load_capath(struct Curl_easy *data, SslContext *context, const c
         return CURLE_SSL_CACERT_BADFILE;
     }
 
-    rc = sslContextImportServerPki(context, tmpbuf, tmpbuf_size, SslCertificateFormat_Pem, NULL);
+    rc = sslContextImportServerPki(context, tmpbuf, tmpbuf_size,
+                                   SslCertificateFormat_Pem, NULL);
     free(tmpbuf);
 
     if(R_FAILED(rc)) {
@@ -192,12 +199,13 @@ static CURLcode Curl_libnx_random(struct Curl_easy *data,
 }
 
 static CURLcode
-set_ssl_version_min_max(struct connectdata *conn, int sockindex, u32 *out_version)
+set_ssl_version_min_max(struct connectdata *conn, int sockindex,
+                        u32 *out_version)
 {
   struct Curl_easy *data = conn->data;
   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
-  u32 libnx_ver_min=0;
-  u32 libnx_ver_max=0;
+  u32 libnx_ver_min = 0;
+  u32 libnx_ver_max = 0;
   long ssl_version = SSL_CONN_CONFIG(version);
   long ssl_version_max = SSL_CONN_CONFIG(version_max);
   CURLcode result = CURLE_OK;
@@ -206,7 +214,8 @@ set_ssl_version_min_max(struct connectdata *conn, int sockindex, u32 *out_versio
     case CURL_SSLVERSION_DEFAULT:
     case CURL_SSLVERSION_TLSv1:
       ssl_version = CURL_SSLVERSION_TLSv1_0;
-      if(ssl_version_max == CURL_SSLVERSION_MAX_NONE || ssl_version_max == CURL_SSLVERSION_MAX_DEFAULT) {
+      if(ssl_version_max == CURL_SSLVERSION_MAX_NONE ||
+         ssl_version_max == CURL_SSLVERSION_MAX_DEFAULT) {
         *out_version = SslVersion_Auto;
         return result;
       }
@@ -253,9 +262,9 @@ libnx_connect_step1(struct connectdata *conn,
     conn->host.name;
   const long int port = SSL_IS_PROXY() ? conn->port : conn->remote_port;
   int ret = -1;
-  Result rc=0;
-  void* tmpbuf = NULL;
-  size_t tmpbuf_size=0;
+  Result rc = 0;
+  void *tmpbuf = NULL;
+  size_t tmpbuf_size = 0;
 
   /* ssl-service only supports TLS 1.0-1.2 */
   if(SSL_CONN_CONFIG(version) == CURL_SSLVERSION_SSLv2) {
@@ -268,7 +277,7 @@ libnx_connect_step1(struct connectdata *conn,
     return CURLE_SSL_CONNECT_ERROR;
   }
 
-  u32 ssl_version=0;
+  u32 ssl_version = 0;
   switch(SSL_CONN_CONFIG(version)) {
   case CURL_SSLVERSION_DEFAULT:
   case CURL_SSLVERSION_TLSv1:
@@ -288,7 +297,8 @@ libnx_connect_step1(struct connectdata *conn,
   }
 
   rc = sslCreateContext(&BACKEND->context, ssl_version);
-  if(R_FAILED(rc)) return CURLE_SSL_CONNECT_ERROR;
+  if(R_FAILED(rc))
+    return CURLE_SSL_CONNECT_ERROR;
 
   /* give application a chance to interfere with context set up. */
   if(data->set.ssl.fsslctx) {
@@ -310,7 +320,8 @@ libnx_connect_step1(struct connectdata *conn,
           return CURLE_SSL_CACERT_BADFILE;
       }
       else {
-        rc = sslContextImportServerPki(&BACKEND->context, tmpbuf, tmpbuf_size, SslCertificateFormat_Pem, NULL);
+        rc = sslContextImportServerPki(&BACKEND->context, tmpbuf, tmpbuf_size,
+                                       SslCertificateFormat_Pem, NULL);
         free(tmpbuf);
 
         if(R_FAILED(rc)) {
@@ -324,16 +335,17 @@ libnx_connect_step1(struct connectdata *conn,
     }
 
     if(ssl_capath) {
-      CURLcode retcode = load_capath(data, &BACKEND->context, ssl_capath, verifypeer);
+      CURLcode retcode = load_capath(data, &BACKEND->context,
+                                     ssl_capath, verifypeer);
 
       if(retcode) return retcode;
     }
 
     /* Load the CRL */
-    /* The input for CRLFILE is PEM, but the ssl-service requires DER. */
-    /* A helper func for converting PEM to DER would be needed for this. */
-    /* sectransp.c has pem_to_der(), but having a duplicate func isn't ideal. */
-    /* Therefore, the below is disabled. */
+    /* The input for CRLFILE is PEM, but the ssl-service requires DER.
+     * A helper func for converting PEM to DER would be needed for this.
+     * sectransp.c has pem_to_der(), but having a duplicate func isn't ideal.
+     * Therefore, the below is disabled. */
     /*
     if(ssl_crlfile) {
       if(!load_file(ssl_crlfile, &tmpbuf, &tmpbuf_size)) {
@@ -371,7 +383,10 @@ libnx_connect_step1(struct connectdata *conn,
         return CURLE_SSL_CERTPROBLEM;
       }
 
-      rc = sslContextImportClientPki(&BACKEND->context, tmpbuf, tmpbuf_size, key_passwd, key_passwd ? strlen(key_passwd) : 0, NULL);
+      rc = sslContextImportClientPki(&BACKEND->context, tmpbuf, tmpbuf_size,
+                                     key_passwd,
+                                     key_passwd ? strlen(key_passwd) : 0,
+                                     NULL);
       free(tmpbuf);
 
       if(R_FAILED(rc)) {
@@ -383,30 +398,37 @@ libnx_connect_step1(struct connectdata *conn,
     }
 
     if(!ssl_cafile && !ssl_capath && !ssl_cert) {
-      rc = sslContextRegisterInternalPki(&BACKEND->context, SslInternalPki_DeviceClientCertDefault, NULL);
-      if(R_FAILED(rc)) return CURLE_SSL_CONNECT_ERROR;
+      SslInternalPki internal_pki = SslInternalPki_DeviceClientCertDefault;
+      rc = sslContextRegisterInternalPki(&BACKEND->context,
+                                         internal_pki, NULL);
+      if(R_FAILED(rc))
+        return CURLE_SSL_CONNECT_ERROR;
     }
   }
 
   rc = sslContextCreateConnection(&BACKEND->context, &BACKEND->conn);
 
   if(R_SUCCEEDED(rc))
-    rc = sslConnectionSetOption(&BACKEND->conn, SslOptionType_DoNotCloseSocket, TRUE);
+    rc = sslConnectionSetOption(&BACKEND->conn,
+                                SslOptionType_DoNotCloseSocket, TRUE);
 
   if(R_SUCCEEDED(rc)) {
     ret = socketSslConnectionSetSocketDescriptor(&BACKEND->conn, (int)sockfd);
-    if (ret==-1 && errno!=ENOENT) return CURLE_SSL_CONNECT_ERROR;
+    if(ret == -1 && errno != ENOENT) return CURLE_SSL_CONNECT_ERROR;
   }
 
   if(R_SUCCEEDED(rc))
     rc = sslConnectionSetHostName(&BACKEND->conn, hostname, strlen(hostname));
 
-  /* This will fail on system-versions where this option isn't available, so ignore errors from this. */
+  /* This will fail on system-versions where this option isn't available,
+   * so ignore errors from this. */
   if(R_SUCCEEDED(rc))
-    sslConnectionSetOption(&BACKEND->conn, SslOptionType_SkipDefaultVerify, TRUE);
+    sslConnectionSetOption(&BACKEND->conn,
+                           SslOptionType_SkipDefaultVerify, TRUE);
 
-  if(R_SUCCEEDED(rc) && hosversionAtLeast(3,0,0))
-    rc = sslConnectionSetOption(&BACKEND->conn, SslOptionType_GetServerCertChain, TRUE);
+  if(R_SUCCEEDED(rc) && hosversionAtLeast(3, 0, 0))
+    rc = sslConnectionSetOption(&BACKEND->conn,
+                                SslOptionType_GetServerCertChain, TRUE);
 
   if(R_SUCCEEDED(rc)) {
     u32 verifyopt = SslVerifyOption_DateCheck;
@@ -415,12 +437,17 @@ libnx_connect_step1(struct connectdata *conn,
     rc = sslConnectionSetVerifyOption(&BACKEND->conn, verifyopt);
   }
 
-  if(R_SUCCEEDED(rc))
-    rc = sslConnectionSetSessionCacheMode(&BACKEND->conn, SSL_CONN_CONFIG(sessionid) ? SslSessionCacheMode_SessionId : SslSessionCacheMode_None);
+  if(R_SUCCEEDED(rc)) {
+    SslSessionCacheMode cache_mode = SslSessionCacheMode_None;
+    if(SSL_CONN_CONFIG(sessionid))
+      cache_mode = SslSessionCacheMode_SessionId;
+    rc = sslConnectionSetSessionCacheMode(&BACKEND->conn, cache_mode);
+  }
 
 #ifdef HAS_ALPN
-  if(conn->bits.tls_enable_alpn && hosversionAtLeast(9,0,0)) {
-    rc = sslConnectionSetOption(&BACKEND->conn, SslOptionType_EnableAlpn, TRUE);
+  if(conn->bits.tls_enable_alpn && hosversionAtLeast(9, 0, 0)) {
+    rc = sslConnectionSetOption(&BACKEND->conn,
+                                SslOptionType_EnableAlpn, TRUE);
     if(R_FAILED(rc)) {
       failf(data, "Failed enabling ALPN");
       return CURLE_SSL_CONNECT_ERROR;
@@ -431,7 +458,7 @@ libnx_connect_step1(struct connectdata *conn,
 #ifdef USE_NGHTTP2
     if(data->set.httpversion >= CURL_HTTP_VERSION_2) {
       memcpy(p, NGHTTP2_PROTO_ALPN, NGHTTP2_PROTO_ALPN_LEN);
-      p+= NGHTTP2_PROTO_ALPN_LEN;
+      p += NGHTTP2_PROTO_ALPN_LEN;
       infof(data, "ALPN, offering %s\n", NGHTTP2_PROTO_VERSION_ID);
     }
 #endif
@@ -439,7 +466,9 @@ libnx_connect_step1(struct connectdata *conn,
     memcpy(p, ALPN_HTTP_1_1, ALPN_HTTP_1_1_LENGTH);
     infof(data, "ALPN, offering %s\n", ALPN_HTTP_1_1);
 
-    rc = sslConnectionSetNextAlpnProto(&BACKEND->conn, protocols, (uintptr_t)p + ALPN_HTTP_1_1_LENGTH - (uintptr_t)protocols);
+    u32 size = (uintptr_t)p + ALPN_HTTP_1_1_LENGTH - (uintptr_t)protocols;
+    rc = sslConnectionSetNextAlpnProto(&BACKEND->conn, protocols,
+                                       size);
     if(R_FAILED(rc)) {
       failf(data, "Failed setting ALPN protocols");
       return CURLE_SSL_CONNECT_ERROR;
@@ -447,10 +476,14 @@ libnx_connect_step1(struct connectdata *conn,
   }
 #endif
 
-  if(R_SUCCEEDED(rc))
-    rc = sslConnectionSetIoMode(&BACKEND->conn, nonblocking ? SslIoMode_NonBlocking : SslIoMode_Blocking);
+  if(R_SUCCEEDED(rc)) {
+    SslIoMode iomode = SslIoMode_Blocking;
+    if(nonblocking)
+      iomode = SslIoMode_NonBlocking;
+    rc = sslConnectionSetIoMode(&BACKEND->conn, iomode);
+  }
 
-  if (R_FAILED(rc))
+  if(R_FAILED(rc))
     return CURLE_SSL_CONNECT_ERROR;
 
   infof(data, "libnx: Connecting to %s:%ld\n", hostname, port);
@@ -464,7 +497,7 @@ static CURLcode
 libnx_connect_step2(struct connectdata *conn,
                    int sockindex)
 {
-  Result rc=0;
+  Result rc = 0;
   CURLcode retcode = CURLE_OK;
   struct Curl_easy *data = conn->data;
   struct ssl_connect_data* connssl = &conn->ssl[sockindex];
@@ -488,43 +521,52 @@ libnx_connect_step2(struct connectdata *conn,
     return CURLE_OUT_OF_MEMORY;
   }
 
-  u32 out_size=0, total_certs=0;
-  rc = sslConnectionDoHandshake(&BACKEND->conn, &out_size, &total_certs, buffer, bufsize);
+  u32 out_size = 0, total_certs = 0;
+  rc = sslConnectionDoHandshake(&BACKEND->conn, &out_size, &total_certs,
+                                buffer, bufsize);
 
-  if(memcmp(buffer, zeros, sizeof(zeros))) {
+  if(memcmp(buffer, zeros, sizeof(zeros)))
     memcpy(BACKEND->certbuf, buffer, bufsize);
-  }
   free(buffer);
 
   if(R_FAILED(rc)) {
-      if(R_VALUE(rc) == MAKERESULT(123, 204)) /* PR_WOULD_BLOCK_ERROR */
-        return CURLE_AGAIN;
+    if(R_VALUE(rc) == MAKERESULT(123, 204)) /* PR_WOULD_BLOCK_ERROR */
+      return CURLE_AGAIN;
 
-      return R_VALUE(rc) == MAKERESULT(123, 207) ? CURLE_PEER_FAILED_VERIFICATION : CURLE_SSL_CONNECT_ERROR;
+      if(R_VALUE(rc) == MAKERESULT(123, 207))
+        return CURLE_PEER_FAILED_VERIFICATION;
+      else
+        return CURLE_SSL_CONNECT_ERROR;
   }
 
   if(out_size && total_certs) {
-    if(data->set.ssl.certinfo) retcode = Curl_ssl_init_certinfo(data, (int)total_certs);
+    if(data->set.ssl.certinfo)
+      retcode = Curl_ssl_init_certinfo(data,
+                                       (int)total_certs);
     if(!retcode) {
-      if(hosversionBefore(3,0,0)) {
+      if(hosversionBefore(3, 0, 0)) {
         infof(data, "Dumping cert info:\n");
-        retcode = Curl_extract_certinfo(conn, 0, BACKEND->certbuf, &BACKEND->certbuf[out_size]);
+        retcode = Curl_extract_certinfo(conn, 0, BACKEND->certbuf,
+                                        &BACKEND->certbuf[out_size]);
         peercert = buffer;
         peercert_size = out_size;
       }
       else {
-        for(u32 certi=0; certi<total_certs; certi++) {
-          void* certdata = NULL;
-          u32 certdata_size=0;
+        for(u32 certi = 0; certi < total_certs; certi++) {
+          void *certdata = NULL;
+          u32 certdata_size = 0;
 
-          rc = sslConnectionGetServerCertDetail(BACKEND->certbuf, out_size, certi, &certdata, &certdata_size);
+          rc = sslConnectionGetServerCertDetail(BACKEND->certbuf, out_size,
+                                                certi, &certdata,
+                                                &certdata_size);
           if(R_SUCCEEDED(rc)) {
             if(!certi) {
               infof(data, "Dumping cert info:\n");
               peercert = certdata;
               peercert_size = certdata_size;
             }
-            retcode = Curl_extract_certinfo(conn, (int)certi, certdata, &((u8*)certdata)[certdata_size]);
+            retcode = Curl_extract_certinfo(conn, (int)certi, certdata,
+                                            &((u8*)certdata)[certdata_size]);
           }
 
           if(R_FAILED(rc) || retcode) break;
@@ -541,28 +583,38 @@ libnx_connect_step2(struct connectdata *conn,
     curl_X509certificate cert;
 
     if(!peercert || !peercert_size) {
-      failf(data, "Failed due to missing peer certificate%s.", SSL_CONN_CONFIG(verifypeer) ? "" : ", CURLOPT_SSL_VERIFYPEER must be enabled");
+      const char *errorptr = "";
+      if(!SSL_CONN_CONFIG(verifypeer))
+        errorptr = ", CURLOPT_SSL_VERIFYPEER must be enabled";
+      failf(data, "Failed due to missing peer certificate%s.", errorptr);
       return CURLE_SSL_PINNEDPUBKEYNOTMATCH;
     }
 
     retcode = Curl_parseX509(&cert, peercert, &peercert[peercert_size]);
-    if(!retcode) return retcode;
+    if(!retcode)
+      return retcode;
 
     retcode = Curl_pin_peer_pubkey(data,
                                   pinnedpubkey,
                                   cert.subjectPublicKey.beg,
-                                  (uintptr_t)cert.subjectPublicKey.end - (uintptr_t)cert.subjectPublicKey.beg);
-    if(retcode) return retcode;
+                                  (uintptr_t)cert.subjectPublicKey.end -
+                                  (uintptr_t)cert.subjectPublicKey.beg);
+    if(retcode)
+      return retcode;
   }
 
 #ifdef HAS_ALPN
   if(conn->bits.tls_enable_alpn) {
     u8 next_protocol[0x33]={0};
     SslAlpnProtoState state;
-    u32 out_size=0;
-    rc = sslConnectionGetNextAlpnProto(&BACKEND->conn, &state, &out_size, next_protocol, sizeof(next_protocol)-1);
+    u32 out_size = 0;
+    rc = sslConnectionGetNextAlpnProto(&BACKEND->conn, &state, &out_size,
+                                       next_protocol,
+                                       sizeof(next_protocol)-1);
 
-    if(R_SUCCEEDED(rc) && next_protocol[0] && (state==SslAlpnProtoState_Negotiated || state==SslAlpnProtoState_Selected)) {
+    if(R_SUCCEEDED(rc) && next_protocol[0] &&
+      (state == SslAlpnProtoState_Negotiated ||
+       state == SslAlpnProtoState_Selected)) {
       infof(data, "ALPN, server accepted to use %s\n", next_protocol);
 #ifdef USE_NGHTTP2
       if(out_size == NGHTTP2_PROTO_VERSION_ID_LEN &&
@@ -596,13 +648,14 @@ static ssize_t libnx_send(struct connectdata *conn, int sockindex,
                          CURLcode *curlcode)
 {
   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
-  Result rc=0;
-  u32 out_size=0;
+  Result rc = 0;
+  u32 out_size = 0;
 
   rc = sslConnectionWrite(&BACKEND->conn, mem, len, &out_size);
 
   if(R_FAILED(rc)) {
-    *curlcode = (R_VALUE(rc) == MAKERESULT(123, 204)) ? /* PR_WOULD_BLOCK_ERROR */
+    /* PR_WOULD_BLOCK_ERROR */
+    *curlcode = (R_VALUE(rc) == MAKERESULT(123, 204)) ?
       CURLE_AGAIN : CURLE_WRITE_ERROR;
     return -1;
   }
@@ -625,14 +678,15 @@ static ssize_t libnx_recv(struct connectdata *conn, int num,
                          CURLcode *curlcode)
 {
   struct ssl_connect_data *connssl = &conn->ssl[num];
-  Result rc=0;
-  u32 out_size=0;
+  Result rc = 0;
+  u32 out_size = 0;
 
   memset(buf, 0, buffersize);
   rc = sslConnectionRead(&BACKEND->conn, buf, buffersize, &out_size);
 
   if(R_FAILED(rc)) {
-    *curlcode = (R_VALUE(rc) == MAKERESULT(123, 204)) ? /* PR_WOULD_BLOCK_ERROR */
+    /* PR_WOULD_BLOCK_ERROR */
+    *curlcode = (R_VALUE(rc) == MAKERESULT(123, 204)) ?
       CURLE_AGAIN : CURLE_RECV_ERROR;
     return -1;
   }
@@ -656,11 +710,14 @@ static size_t Curl_libnx_version(char *buffer, size_t size)
 static int Curl_libnx_check_cxn(struct connectdata *conn)
 {
   struct ssl_connect_data *connssl = &conn->ssl[FIRSTSOCKET];
-  u8 data=0;
-  u32 out_size=0;
-  Result rc = sslConnectionPeek(&BACKEND->conn, &data, sizeof(data), &out_size);
+  u8 data = 0;
+  u32 out_size = 0;
+  Result rc = sslConnectionPeek(&BACKEND->conn, &data,
+                                sizeof(data), &out_size);
   if(R_FAILED(rc)) {
-    return R_VALUE(rc) == MAKERESULT(123, 204) ? 1 : -1; /* PR_WOULD_BLOCK_ERROR == connection is still in place, otherwise connection status unknown */
+    /* PR_WOULD_BLOCK_ERROR == connection is still in place,
+     * otherwise connection status unknown */
+    return R_VALUE(rc) == MAKERESULT(123, 204) ? 1 : -1;
   }
   return out_size ? 1 : 0;
 }
@@ -671,7 +728,7 @@ libnx_connect_common(struct connectdata *conn,
                     bool nonblocking,
                     bool *done)
 {
-  Result rc=0;
+  Result rc = 0;
   CURLcode retcode = CURLE_OK;
   struct Curl_easy *data = conn->data;
   struct ssl_connect_data *connssl = &conn->ssl[sockindex];
@@ -722,14 +779,20 @@ libnx_connect_common(struct connectdata *conn,
     return CURLE_OK;
   }
 
-  if(retcode == CURLE_AGAIN) return CURLE_OK;
+  if(retcode == CURLE_AGAIN)
+    return CURLE_OK;
   if(retcode == CURLE_PEER_FAILED_VERIFICATION) {
     rc = sslConnectionGetVerifyCertError(&BACKEND->conn);
-    if(R_VALUE(rc) != MAKERESULT(123, 301) && R_VALUE(rc) != MAKERESULT(123, 303) && R_VALUE(rc) != MAKERESULT(123, 304)) {
+    if(R_VALUE(rc) != MAKERESULT(123, 301) &&
+       R_VALUE(rc) != MAKERESULT(123, 303) &&
+       R_VALUE(rc) != MAKERESULT(123, 304)) {
+      /* 1509: SSL_ERROR_BAD_CERT_ALERT
+       * 1511: SSL_ERROR_REVOKED_CERT_ALERT
+       * 1512: SSL_ERROR_EXPIRED_CERT_ALERT */
       if(R_VALUE(rc) == MAKERESULT(123, 323) ||
-         R_VALUE(rc) == MAKERESULT(123, 1509) ||  /* SSL_ERROR_BAD_CERT_ALERT */
-         R_VALUE(rc) == MAKERESULT(123, 1511) ||  /* SSL_ERROR_REVOKED_CERT_ALERT */
-         R_VALUE(rc) == MAKERESULT(123, 1512))    /* SSL_ERROR_EXPIRED_CERT_ALERT */
+         R_VALUE(rc) == MAKERESULT(123, 1509) ||
+         R_VALUE(rc) == MAKERESULT(123, 1511) ||
+         R_VALUE(rc) == MAKERESULT(123, 1512))
         retcode = CURLE_SSL_CERTPROBLEM;
     }
   }
@@ -764,11 +827,12 @@ static CURLcode Curl_libnx_connect(struct connectdata *conn, int sockindex)
  */
 static int Curl_libnx_init(void)
 {
-  Result rc=0;
+  Result rc = 0;
 
   rc = sslInitialize(0x3);
 
-  if(R_SUCCEEDED(rc)) rc = csrngInitialize();
+  if(R_SUCCEEDED(rc))
+    rc = csrngInitialize();
 
   return R_SUCCEEDED(rc);
 }
@@ -783,7 +847,7 @@ static bool Curl_libnx_data_pending(const struct connectdata *conn,
                                       int sockindex)
 {
   const struct ssl_connect_data *connssl = &conn->ssl[sockindex];
-  s32 tmp=0;
+  s32 tmp = 0;
   return R_SUCCEEDED(sslConnectionPending(&BACKEND->conn, &tmp)) && tmp>0;
 }
 
