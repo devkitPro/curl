@@ -396,14 +396,6 @@ libnx_connect_step1(struct connectdata *conn,
         return CURLE_SSL_CERTPROBLEM;
       }
     }
-
-    if(!ssl_cafile && !ssl_capath && !ssl_cert) {
-      SslInternalPki internal_pki = SslInternalPki_DeviceClientCertDefault;
-      rc = sslContextRegisterInternalPki(&BACKEND->context,
-                                         internal_pki, NULL);
-      if(R_FAILED(rc))
-        return CURLE_SSL_CONNECT_ERROR;
-    }
   }
 
   rc = sslContextCreateConnection(&BACKEND->context, &BACKEND->conn);
