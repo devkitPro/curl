@@ -75,7 +75,8 @@
     defined(__minix) || defined(__SYMBIAN32__) || defined(__INTEGRITY) || \
     defined(ANDROID) || defined(__ANDROID__) || defined(__OpenBSD__) || \
     defined(__CYGWIN__) || \
-   (defined(__FreeBSD_version) && (__FreeBSD_version < 800000))
+   (defined(__FreeBSD_version) && (__FreeBSD_version < 800000)) || \
+   defined(__SWITCH__)
 #include <sys/select.h>
 #endif
 
